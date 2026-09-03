@@ -6,13 +6,13 @@
 use super::*;
 
 impl ChatWidget {
-    pub(crate) fn refresh_theme_for_terminal_palette(&mut self) -> bool {
+    pub(crate) fn refresh_theme_for_terminal_palette(&mut self) {
         if self
             .bottom_pane
             .present_view(crate::theme_picker::THEME_PICKER_VIEW_ID)
             .is_some()
         {
-            return false;
+            return;
         }
 
         let name = self.local_settings.tui.theme.as_deref();
@@ -20,15 +20,14 @@ impl ChatWidget {
         if let Some(name) = name
             && crate::render::highlight::resolve_theme_by_name(name, Some(codex_home)).is_some()
         {
-            return false;
+            return;
         }
         let theme = crate::render::highlight::resolve_theme_with_override(name, Some(codex_home));
         if theme == crate::render::highlight::current_syntax_theme() {
-            return false;
+            return;
         }
         crate::render::highlight::set_syntax_theme(theme);
         self.refresh_status_line();
-        true
     }
 
     pub(super) fn open_theme_picker(&mut self) {

@@ -267,9 +267,7 @@ impl App {
                     }
                 }
                 #[cfg(unix)]
-                if self.chat_widget.refresh_theme_for_terminal_palette() {
-                    self.schedule_immediate_resize_reflow(tui);
-                }
+                self.apply_pending_terminal_palette_change(tui);
                 tui.frame_requester().schedule_frame();
             }
             AppEvent::ResumeSessionByIdOrName(id_or_name) => {

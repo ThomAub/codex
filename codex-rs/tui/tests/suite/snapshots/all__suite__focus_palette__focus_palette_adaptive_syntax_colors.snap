@@ -1,10 +1,8 @@
 ---
 source: tui/tests/suite/focus_palette.rs
-expression: "format!(\"light composer background: {light_composer_background:?}\\n\\\n             dark composer background: {dark_composer_background:?}\\n\\\n             light status foreground: {light_status_foreground:?}\\n\\\n             dark status foreground: {dark_status_foreground:?}\\n\\\n             light syntax string foreground: {light_syntax_foreground:?}\\n\\\n             dark syntax string foreground: {dark_syntax_foreground:?}\")"
+expression: "format!(\"light composer background: {LIGHT_COMPOSER_BACKGROUND:?}\\n\\\n             dark composer background: {DARK_COMPOSER_BACKGROUND:?}\\n\\\n             light syntax string foreground: {light_syntax_foreground:?}\\n\\\n             dark syntax string foreground: {dark_syntax_foreground:?}\")"
 ---
 light composer background: Rgb(244, 244, 244)
 dark composer background: Rgb(30, 30, 30)
-light status foreground: Rgb(213, 144, 48)
-dark status foreground: Rgb(246, 226, 183)
 light syntax string foreground: Rgb(64, 160, 43)
 dark syntax string foreground: Rgb(166, 227, 161)

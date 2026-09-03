@@ -817,12 +817,7 @@ impl App {
         event: TuiEvent,
     ) -> Result<AppRunControl> {
         #[cfg(unix)]
-        if matches!(&event, TuiEvent::FocusGained)
-            && crate::terminal_palette::default_colors().is_some()
-            && self.chat_widget.refresh_theme_for_terminal_palette()
-        {
-            self.schedule_immediate_resize_reflow(tui);
-        }
+        self.apply_pending_terminal_palette_change(tui);
         if self.reconnect.offline
             && let TuiEvent::Key(key) = &event
             && matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat)
