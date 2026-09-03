@@ -1,0 +1,26 @@
+---
+source: tui/tests/suite/focus_palette.rs
+expression: "(light_composer_background, dark_composer_background, light_status_foreground, dark_status_foreground)"
+---
+(
+    Rgb(
+        244,
+        244,
+        244,
+    ),
+    Rgb(
+        30,
+        30,
+        30,
+    ),
+    Rgb(
+        213,
+        144,
+        48,
+    ),
+    Rgb(
+        246,
+        226,
+        183,
+    ),
+)

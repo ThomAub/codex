@@ -273,8 +273,6 @@ impl<S: EventSource + Default + Unpin> TuiEventStream<S> {
             Event::Paste(pasted) => Some(TuiEvent::Paste(pasted)),
             Event::FocusGained => {
                 self.terminal_focused.store(true, Ordering::Relaxed);
-                // Keep the startup-cached palette: querying terminal colors here blocks the
-                // input loop, and a direct probe would discard keys typed during the refresh.
                 Some(TuiEvent::FocusGained)
             }
             Event::FocusLost => {

@@ -266,6 +266,8 @@ impl App {
                         self.chat_widget.add_error_message(error_message);
                     }
                 }
+                #[cfg(unix)]
+                self.chat_widget.refresh_theme_for_terminal_palette();
                 tui.frame_requester().schedule_frame();
             }
             AppEvent::ResumeSessionByIdOrName(id_or_name) => {
