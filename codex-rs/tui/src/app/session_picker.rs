@@ -37,7 +37,7 @@ impl App {
                     .or(self.current_displayed_thread_id()),
             )
             .await;
-        match selection {
+        let result = match selection {
             Ok(selection) => {
                 self.apply_resume_picker_selection(tui, app_server, selection)
                     .await
@@ -47,7 +47,10 @@ impl App {
                 self.chat_widget.maybe_send_next_queued_input();
                 Ok(AppRunControl::Continue)
             }
-        }
+        };
+        #[cfg(unix)]
+        self.apply_pending_terminal_palette_change(tui);
+        result
     }
 
     pub(super) async fn apply_resume_picker_selection(

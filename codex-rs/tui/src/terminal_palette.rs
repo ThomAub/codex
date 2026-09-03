@@ -142,6 +142,20 @@ pub(crate) fn set_default_colors_from_startup_probe(
     imp::set_default_colors_from_startup_probe(colors);
 }
 
+/// Refreshes cached colors, reporting changes without discarding a complete pair on timeout.
+#[cfg(unix)]
+pub(crate) fn refresh_default_colors() -> std::io::Result<bool> {
+    let previous = default_colors();
+    if let Some(colors) =
+        crate::terminal_probe::default_colors(crate::terminal_probe::DEFAULT_TIMEOUT)?
+    {
+        let changed = previous.map(|colors| (colors.fg, colors.bg)) != Some((colors.fg, colors.bg));
+        imp::set_default_colors_from_startup_probe(Some(colors));
+        return Ok(changed);
+    }
+    Ok(false)
+}
+
 #[cfg(all(unix, not(test)))]
 mod imp {
     use super::DefaultColors;

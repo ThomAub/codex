@@ -7,7 +7,7 @@
 //! prefers duplicated stdio handles, falls back to the controlling terminal path when stdio is
 //! unavailable, and reports `None` when a response is unavailable.
 //!
-//! Probes run only while the crossterm event stream is absent or paused. Startup replays consumed
+//! While the event stream is absent or paused, startup and palette probes replay consumed
 //! terminal bytes through crossterm's parser so interleaved user input remains available after the
 //! probe completes.
 
@@ -248,10 +248,10 @@ mod imp {
     pub(crate) fn default_colors(timeout: Duration) -> io::Result<Option<DefaultColors>> {
         let mut tty = Tty::open()?;
         tty.write_all(b"\x1B]10;?\x1B\\\x1B]11;?\x1B\\")?;
-        let Some(colors) = read_until(&mut tty, timeout, parse_default_colors)? else {
-            return Ok(None);
-        };
-        Ok(Some(colors))
+        let mut buffer = Vec::new();
+        let result = read_until(&mut tty, timeout, &mut buffer, parse_default_colors);
+        crossterm::event::buffer_input(&startup_replay_input(&buffer))?;
+        result
     }
 
     /// Queries the terminal cursor position while normal input polling is paused.
@@ -262,7 +262,8 @@ mod imp {
     pub(crate) fn cursor_position(timeout: Duration) -> io::Result<Option<Position>> {
         let mut tty = Tty::open()?;
         tty.write_all(b"\x1B[6n")?;
-        read_until(&mut tty, timeout, parse_cursor_position)
+        let mut buffer = Vec::new();
+        read_until(&mut tty, timeout, &mut buffer, parse_cursor_position)
     }
 
     /// Runs the optional terminal queries needed during TUI startup under one shared deadline.
@@ -291,19 +292,18 @@ mod imp {
 
     /// Reads available terminal bytes until `parse` recognizes a probe response or time expires.
     ///
-    /// The accumulated buffer may include unrelated terminal input. This helper intentionally does
-    /// not try to replay those bytes, so callers must use it only during short, exclusive probe
-    /// windows before normal crossterm input polling begins or while that polling is paused.
+    /// The accumulated buffer may include unrelated terminal input. Callers decide whether those
+    /// bytes should be replayed after the probe completes.
     fn read_until<T>(
         tty: &mut Tty,
         timeout: Duration,
+        buffer: &mut Vec<u8>,
         mut parse: impl FnMut(&[u8]) -> Option<T>,
     ) -> io::Result<Option<T>> {
         let deadline = Instant::now() + timeout;
-        let mut buffer = Vec::new();
         loop {
-            tty.read_available(&mut buffer, deadline, MAX_TERMINAL_PROBE_BYTES)?;
-            if let Some(value) = parse(&buffer) {
+            tty.read_available(buffer, deadline, MAX_TERMINAL_PROBE_BYTES)?;
+            if let Some(value) = parse(buffer) {
                 return Ok(Some(value));
             }
             let now = Instant::now();

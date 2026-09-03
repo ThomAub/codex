@@ -310,6 +310,14 @@ impl App {
         tui.frame_requester().schedule_frame();
     }
 
+    #[cfg(unix)]
+    pub(super) fn apply_pending_terminal_palette_change(&mut self, tui: &mut tui::Tui) {
+        if tui.take_terminal_palette_change() {
+            self.chat_widget.refresh_theme_for_terminal_palette();
+            self.schedule_immediate_resize_reflow(tui);
+        }
+    }
+
     /// Force stream-finalized output through the resize reflow path.
     ///
     /// Proposed plan consolidation uses this stricter path because a completed plan is inserted or

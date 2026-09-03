@@ -39,6 +39,8 @@ use ratatui::layout::Size;
 use ratatui::text::Line;
 use tokio::sync::broadcast;
 use tokio_stream::Stream;
+#[cfg(unix)]
+use tokio_stream::StreamExt;
 
 pub use self::frame_requester::FrameRequester;
 use self::input_boundary::TerminalInitializationGuard;
@@ -598,6 +600,8 @@ pub struct Tui {
     alt_screen_active: Arc<AtomicBool>,
     // True when terminal/tab is focused; updated internally from crossterm events
     terminal_focused: Arc<AtomicBool>,
+    #[cfg(unix)]
+    terminal_palette_change_pending: Arc<AtomicBool>,
     enhanced_keys_supported: bool,
     notification_backend: Option<DesktopNotificationBackend>,
     notification_condition: NotificationCondition,
@@ -653,6 +657,8 @@ impl Tui {
             suspend_context: SuspendContext::new(),
             alt_screen_active: Arc::new(AtomicBool::new(false)),
             terminal_focused: Arc::new(AtomicBool::new(true)),
+            #[cfg(unix)]
+            terminal_palette_change_pending: Arc::new(AtomicBool::new(false)),
             enhanced_keys_supported,
             notification_backend: Some(detect_backend(NotificationMethod::default())),
             notification_condition: NotificationCondition::default(),
@@ -678,6 +684,12 @@ impl Tui {
 
     pub(crate) fn is_terminal_focused(&self) -> bool {
         self.terminal_focused.load(Ordering::Relaxed)
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn take_terminal_palette_change(&self) -> bool {
+        self.terminal_palette_change_pending
+            .swap(false, Ordering::Relaxed)
     }
 
     pub fn frame_requester(&self) -> FrameRequester {
@@ -817,6 +829,31 @@ impl Tui {
             self.suspend_context.clone(),
             self.alt_screen_active.clone(),
         );
+        #[cfg(unix)]
+        let stream = {
+            let event_broker = self.event_broker.clone();
+            let terminal_palette_change_pending = self.terminal_palette_change_pending.clone();
+            stream.map(move |event| {
+                // Avoid a focus-time delay in terminals that did not answer the startup probe.
+                if matches!(event, TuiEvent::FocusGained)
+                    && crate::terminal_palette::default_colors().is_some()
+                {
+                    event_broker.pause_events();
+                    let result = crate::terminal_palette::refresh_default_colors();
+                    event_broker.resume_events();
+                    match result {
+                        Ok(true) => terminal_palette_change_pending.store(true, Ordering::Relaxed),
+                        Ok(false) => {}
+                        Err(err) => tracing::warn!(
+                            event = "terminal_palette_refresh_failed",
+                            error = %err,
+                            "failed to refresh terminal default colors"
+                        ),
+                    }
+                }
+                event
+            })
+        };
         #[cfg(not(unix))]
         let stream = TuiEventStream::new(
             self.event_broker.clone(),

@@ -7,7 +7,8 @@
 //!   syntax theme as the user navigates, giving instant visual feedback in both
 //!   the preview panel and any visible code blocks.
 //! - **Cancel-restore:** on dismiss (Esc / Ctrl+C) the `on_cancel` callback
-//!   restores the theme snapshot taken when the picker opened.
+//!   restores explicit themes exactly and recomputes adaptive themes from the
+//!   current terminal palette.
 //! - **Persist on confirm:** the `AppEvent::SyntaxThemeSelected` action persists
 //!   `[tui] theme = "..."` to `config.toml` via `ConfigEditsBuilder`.
 //!
@@ -41,6 +42,8 @@ use ratatui::layout::Rect;
 use ratatui::text::Line;
 use ratatui::widgets::Widget;
 use unicode_width::UnicodeWidthStr;
+
+pub(crate) const THEME_PICKER_VIEW_ID: &str = "theme-picker";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PreviewDiffKind {
@@ -319,6 +322,8 @@ pub(crate) fn build_theme_picker_params(
 
     let entries = highlight::list_available_themes(codex_home);
     let codex_home_owned = codex_home.map(Path::to_path_buf);
+    let restore_adaptive_on_cancel =
+        current_name.is_none_or(|name| !entries.iter().any(|entry| entry.name == name));
 
     // Resolve the effective theme name: honor explicit config only when it is
     // currently available; otherwise fall back to configured/default selection
@@ -380,14 +385,26 @@ pub(crate) fn build_theme_picker_params(
     )
         as Box<dyn Fn(usize, &crate::app_event_sender::AppEventSender) + Send + Sync>);
 
-    // Restore original theme on cancel.
+    // Restore explicit themes exactly. Adaptive themes must be resolved against the current
+    // terminal palette because it may have changed while the picker was open.
+    let cancel_name = current_name.map(str::to_owned);
+    let cancel_home = codex_home_owned.clone();
     let on_cancel = Some(
         Box::new(move |tx: &crate::app_event_sender::AppEventSender| {
-            highlight::set_syntax_theme(original_theme.clone());
+            let theme = if restore_adaptive_on_cancel {
+                highlight::resolve_theme_with_override(
+                    cancel_name.as_deref(),
+                    cancel_home.as_deref(),
+                )
+            } else {
+                original_theme.clone()
+            };
+            highlight::set_syntax_theme(theme);
             tx.send(AppEvent::SyntaxThemePreviewed);
         }) as Box<dyn Fn(&crate::app_event_sender::AppEventSender) + Send + Sync>,
     );
     SelectionViewParams {
+        view_id: Some(THEME_PICKER_VIEW_ID),
         title: Some("Select Syntax Theme".to_string()),
         subtitle: Some(theme_picker_subtitle(
             codex_home_owned.as_deref(),

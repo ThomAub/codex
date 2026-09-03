@@ -266,6 +266,8 @@ impl App {
                         self.chat_widget.add_error_message(error_message);
                     }
                 }
+                #[cfg(unix)]
+                self.apply_pending_terminal_palette_change(tui);
                 tui.frame_requester().schedule_frame();
             }
             AppEvent::ResumeSessionByIdOrName(id_or_name) => {
@@ -2938,7 +2940,7 @@ impl App {
             }
             AppEvent::SyntaxThemePreviewed => {
                 self.refresh_status_line();
-                tui.frame_requester().schedule_frame();
+                self.schedule_immediate_resize_reflow(tui);
             }
             AppEvent::OpenKeymapActionMenu { context, action } => {
                 self.chat_widget
