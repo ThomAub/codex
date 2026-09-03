@@ -819,8 +819,9 @@ impl App {
         #[cfg(unix)]
         if matches!(&event, TuiEvent::FocusGained)
             && crate::terminal_palette::default_colors().is_some()
+            && self.chat_widget.refresh_theme_for_terminal_palette()
         {
-            self.chat_widget.refresh_theme_for_terminal_palette();
+            self.schedule_immediate_resize_reflow(tui);
         }
         if self.reconnect.offline
             && let TuiEvent::Key(key) = &event

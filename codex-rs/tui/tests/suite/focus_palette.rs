@@ -13,6 +13,7 @@ use std::time::Instant;
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::bail;
+use core_test_support::responses;
 use pretty_assertions::assert_eq;
 use pretty_assertions::assert_ne;
 use tempfile::TempDir;
@@ -28,57 +29,89 @@ const DARK_PALETTE_RESPONSE: &[u8] =
 const LIGHT_COMPOSER_BACKGROUND: vt100::Color = vt100::Color::Rgb(244, 244, 244);
 const DARK_COMPOSER_BACKGROUND: vt100::Color = vt100::Color::Rgb(30, 30, 30);
 const STATUS_MODEL_TEXT: &str = "gpt-5.6-terra";
+const SYNTAX_MARKER: &str = "syntax-palette-24527";
 const THEME_PREVIEW_TEXT: &str = "summarize";
 const THEME_PREVIEW_SELECTION: &str = "› ansi";
 
-pub(super) enum TestSyntaxTheme {
+pub(super) enum FocusPaletteConfig {
     Adaptive,
-    Explicit(&'static str),
+    AdaptiveWithResponses(String),
+    ExplicitTheme(&'static str),
 }
 
-#[test]
-fn focus_gained_refreshes_palette_and_preserves_input() -> Result<()> {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn focus_gained_refreshes_palette_and_preserves_input() -> Result<()> {
     let repo_root = codex_utils_cargo_bin::repo_root()?;
     let codex_home = tempfile::tempdir()?;
-    write_test_config(codex_home.path(), &repo_root, TestSyntaxTheme::Adaptive)?;
+    let server = responses::start_mock_server().await;
+    let _response_mock = responses::mount_sse_once(
+        &server,
+        responses::sse(vec![
+            responses::ev_response_created("resp-focus-palette"),
+            responses::ev_assistant_message(
+                "msg-focus-palette",
+                &format!("```rust\nlet marker = \"{SYNTAX_MARKER}\";\n```"),
+            ),
+            responses::ev_completed("resp-focus-palette"),
+        ]),
+    )
+    .await;
+    let openai_base_url = format!("{}/v1", server.uri());
+    write_test_config(
+        codex_home.path(),
+        &repo_root,
+        FocusPaletteConfig::AdaptiveWithResponses(openai_base_url),
+    )?;
 
     let mut terminal = PtyCodex::start(&repo_root, codex_home)?;
     terminal.wait_for_startup()?;
     let light_composer_background = terminal
         .composer_background()
         .context("find composer background before palette refresh")?;
-    let light_status_foreground =
-        terminal
-            .text_foreground(STATUS_MODEL_TEXT)
-            .with_context(|| {
-                format!(
-                    "find model color in light status line; screen:\n{}",
-                    terminal.screen_contents()
-                )
-            })?;
+    let light_status_foreground = terminal
+        .text_foreground(STATUS_MODEL_TEXT)
+        .context("find model color in light status line")?;
+    let response_started = Instant::now();
+    terminal.write_input(b"render syntax\r")?;
+    terminal.wait_for_idle_screen_state(
+        SYNTAX_MARKER,
+        LIGHT_COMPOSER_BACKGROUND,
+        response_started,
+    )?;
+    let light_syntax_foreground = terminal
+        .text_foreground(SYNTAX_MARKER)
+        .context("find syntax color before palette refresh")?;
 
-    let focus_started = Instant::now();
-    let focus_output_start = terminal.output.len();
-    terminal.write_input(format!("\u{1b}[I{FOCUS_PROBE_INPUT}").as_bytes())?;
-    terminal.wait_for_palette_query(focus_started, focus_output_start)?;
+    let focus_input = format!("\u{1b}[I{FOCUS_PROBE_INPUT}");
+    let focus_started = terminal.start_palette_refresh(focus_input.as_bytes())?;
     let delayed_input = "-delayed";
     terminal.write_input(delayed_input.as_bytes())?;
     terminal.write_input(DARK_PALETTE_RESPONSE)?;
     let expected_input = format!("{FOCUS_PROBE_INPUT}{delayed_input}");
-    terminal.wait_for_focus_result(&expected_input, DARK_COMPOSER_BACKGROUND, focus_started)?;
+    terminal.wait_for_idle_screen_state(
+        &expected_input,
+        DARK_COMPOSER_BACKGROUND,
+        focus_started,
+    )?;
     let dark_composer_background = terminal
         .composer_background()
         .context("find composer background after palette refresh")?;
     let dark_status_foreground = terminal
         .text_foreground(STATUS_MODEL_TEXT)
         .context("find model color in dark status line")?;
-    insta::assert_debug_snapshot!(
+    let dark_syntax_foreground = terminal
+        .text_foreground(SYNTAX_MARKER)
+        .context("find syntax color after palette refresh")?;
+    assert_ne!(dark_syntax_foreground, light_syntax_foreground);
+    insta::assert_snapshot!(
         "focus_palette_adaptive_syntax_colors",
-        (
-            light_composer_background,
-            dark_composer_background,
-            light_status_foreground,
-            dark_status_foreground,
+        format!(
+            "light composer background: {light_composer_background:?}\n\
+             dark composer background: {dark_composer_background:?}\n\
+             light status foreground: {light_status_foreground:?}\n\
+             dark status foreground: {dark_status_foreground:?}\n\
+             light syntax string foreground: {light_syntax_foreground:?}\n\
+             dark syntax string foreground: {dark_syntax_foreground:?}"
         )
     );
 
@@ -89,18 +122,15 @@ fn focus_gained_refreshes_palette_and_preserves_input() -> Result<()> {
 fn unanswered_focus_palette_refresh_preserves_cached_palette_and_input() -> Result<()> {
     let repo_root = codex_utils_cargo_bin::repo_root()?;
     let codex_home = tempfile::tempdir()?;
-    write_test_config(codex_home.path(), &repo_root, TestSyntaxTheme::Adaptive)?;
+    write_test_config(codex_home.path(), &repo_root, FocusPaletteConfig::Adaptive)?;
 
     let mut terminal = PtyCodex::start(&repo_root, codex_home)?;
     terminal.wait_for_startup()?;
 
     let input = format!("{FOCUS_PROBE_INPUT}-timeout");
-    let focus_started = Instant::now();
-    let focus_output_start = terminal.output.len();
-    terminal.write_input(b"\x1b[I")?;
-    terminal.wait_for_palette_query(focus_started, focus_output_start)?;
+    let focus_started = terminal.start_palette_refresh(b"\x1b[I")?;
     terminal.write_input(input.as_bytes())?;
-    terminal.wait_for_focus_result(&input, LIGHT_COMPOSER_BACKGROUND, focus_started)?;
+    terminal.wait_for_idle_screen_state(&input, LIGHT_COMPOSER_BACKGROUND, focus_started)?;
 
     Ok(())
 }
@@ -109,7 +139,7 @@ fn unanswered_focus_palette_refresh_preserves_cached_palette_and_input() -> Resu
 fn focus_palette_refresh_preserves_active_theme_preview() -> Result<()> {
     let repo_root = codex_utils_cargo_bin::repo_root()?;
     let codex_home = tempfile::tempdir()?;
-    write_test_config(codex_home.path(), &repo_root, TestSyntaxTheme::Adaptive)?;
+    write_test_config(codex_home.path(), &repo_root, FocusPaletteConfig::Adaptive)?;
 
     let mut terminal = PtyCodex::start(&repo_root, codex_home)?;
     terminal.wait_for_startup()?;
@@ -135,12 +165,7 @@ fn focus_palette_refresh_preserves_active_theme_preview() -> Result<()> {
         && !terminal.screen_contains(THEME_PREVIEW_SELECTION)
     {
         terminal.write_input(b"\x1b[H\x1b[B")?;
-        let key_started = Instant::now();
-        while key_started.elapsed() < Duration::from_millis(/*millis*/ 50)
-            && !terminal.screen_contains(THEME_PREVIEW_SELECTION)
-        {
-            terminal.read_output(Duration::from_millis(/*millis*/ 5))?;
-        }
+        terminal.read_output(Duration::from_millis(/*millis*/ 50))?;
     }
     if !terminal.screen_contains(THEME_PREVIEW_SELECTION) {
         bail!(
@@ -154,25 +179,21 @@ fn focus_palette_refresh_preserves_active_theme_preview() -> Result<()> {
         .context("find selected theme preview foreground")?;
     assert_ne!(preview_foreground, initial_preview_foreground);
 
-    let focus_started = Instant::now();
-    let focus_output_start = terminal.output.len();
-    terminal.write_input(b"\x1b[I")?;
-    terminal.wait_for_palette_query(focus_started, focus_output_start)?;
+    let focus_started = terminal.start_palette_refresh(b"\x1b[I")?;
     terminal.write_input(DARK_PALETTE_RESPONSE)?;
-
-    let verification_focus_started = Instant::now();
-    let verification_focus_output_start = terminal.output.len();
-    terminal.write_input(b"\x1b[O\x1b[I")?;
-    terminal.wait_for_palette_query(verification_focus_started, verification_focus_output_start)?;
+    terminal.wait_for_idle_screen_state(
+        THEME_PREVIEW_SELECTION,
+        DARK_COMPOSER_BACKGROUND,
+        focus_started,
+    )?;
     let refreshed_preview_foreground = terminal
         .text_foreground(THEME_PREVIEW_TEXT)
         .context("find theme preview foreground after palette refresh")?;
     assert_eq!(refreshed_preview_foreground, preview_foreground);
-    terminal.write_input(DARK_PALETTE_RESPONSE)?;
 
     let cancel_started = Instant::now();
     terminal.write_input(b"\x1b")?;
-    let dark_status_foreground = loop {
+    loop {
         terminal.read_output(Duration::from_millis(/*millis*/ 20))?;
         if !terminal.screen_contains("Select Syntax Theme")
             && terminal.composer_background() == Some(DARK_COMPOSER_BACKGROUND)
@@ -180,7 +201,7 @@ fn focus_palette_refresh_preserves_active_theme_preview() -> Result<()> {
             && matches!(foreground, vt100::Color::Rgb(..))
             && foreground != light_status_foreground
         {
-            break foreground;
+            break;
         }
         if cancel_started.elapsed() >= FOCUS_INPUT_TIMEOUT {
             bail!(
@@ -191,8 +212,7 @@ fn focus_palette_refresh_preserves_active_theme_preview() -> Result<()> {
                 terminal.screen_contents(),
             );
         }
-    };
-    assert_ne!(dark_status_foreground, light_status_foreground);
+    }
     Ok(())
 }
 
@@ -203,7 +223,7 @@ fn focus_palette_refresh_preserves_explicit_syntax_theme() -> Result<()> {
     write_test_config(
         codex_home.path(),
         &repo_root,
-        TestSyntaxTheme::Explicit("catppuccin-latte"),
+        FocusPaletteConfig::ExplicitTheme("catppuccin-latte"),
     )?;
 
     let mut terminal = PtyCodex::start(&repo_root, codex_home)?;
@@ -212,12 +232,13 @@ fn focus_palette_refresh_preserves_explicit_syntax_theme() -> Result<()> {
         .text_foreground(STATUS_MODEL_TEXT)
         .context("find model color before explicit-theme refresh")?;
 
-    let focus_started = Instant::now();
-    let focus_output_start = terminal.output.len();
-    terminal.write_input(b"\x1b[I")?;
-    terminal.wait_for_palette_query(focus_started, focus_output_start)?;
+    let focus_started = terminal.start_palette_refresh(b"\x1b[I")?;
     terminal.write_input(DARK_PALETTE_RESPONSE)?;
-    terminal.wait_for_focus_result(STATUS_MODEL_TEXT, DARK_COMPOSER_BACKGROUND, focus_started)?;
+    terminal.wait_for_idle_screen_state(
+        STATUS_MODEL_TEXT,
+        DARK_COMPOSER_BACKGROUND,
+        focus_started,
+    )?;
 
     assert_eq!(
         terminal.text_foreground(STATUS_MODEL_TEXT),
@@ -331,6 +352,14 @@ impl PtyCodex {
         );
     }
 
+    fn start_palette_refresh(&mut self, focus_input: &[u8]) -> Result<Instant> {
+        let focus_started = Instant::now();
+        let output_start = self.output.len();
+        self.write_input(focus_input)?;
+        self.wait_for_palette_query(focus_started, output_start)?;
+        Ok(focus_started)
+    }
+
     fn wait_for_palette_query(
         &mut self,
         focus_started: Instant,
@@ -353,23 +382,24 @@ impl PtyCodex {
         );
     }
 
-    fn wait_for_focus_result(
+    fn wait_for_idle_screen_state(
         &mut self,
-        input: &str,
+        required_text: &str,
         expected_background: vt100::Color,
         focus_started: Instant,
     ) -> Result<()> {
         while focus_started.elapsed() < FOCUS_INPUT_TIMEOUT {
             self.read_output(Duration::from_millis(/*millis*/ 20))?;
-            if self.screen_contains(input)
+            if self.screen_contains(required_text)
                 && self.composer_background() == Some(expected_background)
+                && !self.screen_contains("Working (")
             {
                 return Ok(());
             }
         }
 
         bail!(
-            "focus-time palette refresh did not preserve {input:?} with background \
+            "screen did not show {required_text:?} with background \
              {expected_background:?} within {:?}; actual background: {:?}; screen:\n{}",
             FOCUS_INPUT_TIMEOUT,
             self.composer_background(),
@@ -487,16 +517,28 @@ fn contains_bytes(buffer: &[u8], needle: &[u8]) -> bool {
 pub(super) fn write_test_config(
     codex_home: &Path,
     repo_root: &Path,
-    syntax_theme: TestSyntaxTheme,
+    test_config: FocusPaletteConfig,
 ) -> Result<()> {
     let repo_root = repo_root.display();
-    let syntax_theme = match syntax_theme {
-        TestSyntaxTheme::Adaptive => String::new(),
-        TestSyntaxTheme::Explicit(name) => format!("theme = \"{name}\"\n"),
+    let (syntax_theme, model_provider_name, model_provider_config) = match test_config {
+        FocusPaletteConfig::Adaptive => (String::new(), "openai", String::new()),
+        FocusPaletteConfig::AdaptiveWithResponses(base_url) => (
+            String::new(),
+            "mock",
+            format!(
+                "\n[model_providers.mock]\nname = \"mock\"\nbase_url = \"{base_url}\"\n\
+                 env_key = \"OPENAI_API_KEY\"\nwire_api = \"responses\"\n\
+                 supports_websockets = false\n"
+            ),
+        ),
+        FocusPaletteConfig::ExplicitTheme(name) => {
+            (format!("theme = \"{name}\"\n"), "openai", String::new())
+        }
     };
     let config = format!(
-        "model = \"gpt-5.6-terra\"\nmodel_provider = \"openai\"\n\
-         suppress_unstable_features_warning = true\nanalytics.enabled = false\n\n\
+        "model = \"gpt-5.6-terra\"\nmodel_provider = \"{model_provider_name}\"\n\
+         suppress_unstable_features_warning = true\nanalytics.enabled = false\n\
+         {model_provider_config}\n\
          [tui]\nstatus_line = [\"model\"]\nstatus_line_use_colors = true\n{syntax_theme}\n\
          [projects.\"{repo_root}\"]\ntrust_level = \"trusted\"\n"
     );

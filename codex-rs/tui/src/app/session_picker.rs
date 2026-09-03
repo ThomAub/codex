@@ -49,7 +49,9 @@ impl App {
             }
         };
         #[cfg(unix)]
-        self.chat_widget.refresh_theme_for_terminal_palette();
+        if self.chat_widget.refresh_theme_for_terminal_palette() {
+            self.schedule_immediate_resize_reflow(tui);
+        }
         result
     }
 

@@ -7,9 +7,9 @@
 //! prefers duplicated stdio handles, falls back to the controlling terminal path when stdio is
 //! unavailable, and reports `None` when a response is unavailable.
 //!
-//! Probes run only while the crossterm event stream is absent or paused. Palette and startup probes
-//! replay consumed terminal bytes through crossterm's parser so interleaved user input remains
-//! available after the probe completes.
+//! While the event stream is absent or paused, startup and palette probes replay consumed
+//! terminal bytes through crossterm's parser so interleaved user input remains available after the
+//! probe completes.
 
 use std::time::Duration;
 
