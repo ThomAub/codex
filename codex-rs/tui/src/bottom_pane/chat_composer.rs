@@ -5226,6 +5226,29 @@ mod tests {
     }
 
     #[test]
+    fn dark_terminal_palette_renders_dark_composer_snapshot() {
+        let colors = crate::terminal_probe::DefaultColors {
+            fg: (0xf3, 0xf3, 0xf3),
+            bg: (0x14, 0x14, 0x14),
+        };
+
+        crate::terminal_palette::with_test_default_colors(colors, || {
+            let (composer, _rx) = new_test_composer();
+            let area = Rect::new(
+                /*x*/ 0, /*y*/ 0, /*width*/ 48, /*height*/ 6,
+            );
+            let mut buffer = Buffer::empty(area);
+            composer.render(area, &mut buffer);
+
+            assert_eq!(
+                buffer[(0, 1)].bg,
+                crate::terminal_palette::rgb_color((48, 48, 48))
+            );
+            insta::assert_snapshot!("dark_terminal_palette_composer", format!("{buffer:?}"));
+        });
+    }
+
+    #[test]
     fn footer_hint_row_is_separated_from_composer() {
         let (tx, _rx) = unbounded_channel::<AppEvent>();
         let sender = AppEventSender::new(tx);

@@ -13,16 +13,21 @@ use std::time::Instant;
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::bail;
-use anyhow::ensure;
 use tempfile::TempDir;
 
 // Full startup continues after the composer first appears and can be slower under Rosetta in CI.
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(/*secs*/ 30);
 const FOCUS_INPUT_TIMEOUT: Duration = Duration::from_secs(/*secs*/ 5);
 const FOCUS_PROBE_INPUT: &str = "focus-palette-24527";
+const LIGHT_PALETTE_RESPONSE: &[u8] =
+    b"\x1b]10;rgb:0000/0000/0000\x1b\\\x1b]11;rgb:ffff/ffff/ffff\x1b\\";
+const DARK_PALETTE_RESPONSE: &[u8] =
+    b"\x1b]10;rgb:ffff/ffff/ffff\x1b\\\x1b]11;rgb:0000/0000/0000\x1b\\";
+const LIGHT_COMPOSER_BACKGROUND: vt100::Color = vt100::Color::Rgb(244, 244, 244);
+const DARK_COMPOSER_BACKGROUND: vt100::Color = vt100::Color::Rgb(30, 30, 30);
 
 #[test]
-fn focus_gained_with_unanswered_palette_queries_preserves_immediate_input() -> Result<()> {
+fn focus_gained_refreshes_palette_and_preserves_input() -> Result<()> {
     let repo_root = codex_utils_cargo_bin::repo_root()?;
     let codex_home = tempfile::tempdir()?;
     write_test_config(codex_home.path(), &repo_root)?;
@@ -30,17 +35,45 @@ fn focus_gained_with_unanswered_palette_queries_preserves_immediate_input() -> R
     let mut terminal = PtyCodex::start(&repo_root, codex_home)?;
     terminal.wait_for_startup()?;
 
-    let startup_output_len = terminal.output.len();
     let focus_started = Instant::now();
+    let focus_output_start = terminal.output.len();
     terminal.write_input(format!("\u{1b}[I{FOCUS_PROBE_INPUT}").as_bytes())?;
-    terminal.wait_for_focus_input(FOCUS_PROBE_INPUT, focus_started, startup_output_len)?;
+    terminal.wait_for_palette_query(focus_started, focus_output_start)?;
+    terminal.write_input(DARK_PALETTE_RESPONSE)?;
+    terminal.wait_for_focus_result(FOCUS_PROBE_INPUT, DARK_COMPOSER_BACKGROUND, focus_started)?;
 
     let delayed_input = format!("{FOCUS_PROBE_INPUT}-delayed");
     let delayed_focus_started = Instant::now();
+    let delayed_focus_output_start = terminal.output.len();
     terminal.write_input(b"\x1b[I")?;
-    terminal.read_output(Duration::from_millis(/*millis*/ 20))?;
+    terminal.wait_for_palette_query(delayed_focus_started, delayed_focus_output_start)?;
     terminal.write_input(delayed_input.as_bytes())?;
-    terminal.wait_for_focus_input(&delayed_input, delayed_focus_started, startup_output_len)?;
+    terminal.write_input(DARK_PALETTE_RESPONSE)?;
+    terminal.wait_for_focus_result(
+        &delayed_input,
+        DARK_COMPOSER_BACKGROUND,
+        delayed_focus_started,
+    )?;
+
+    Ok(())
+}
+
+#[test]
+fn unanswered_focus_palette_refresh_preserves_cached_palette_and_input() -> Result<()> {
+    let repo_root = codex_utils_cargo_bin::repo_root()?;
+    let codex_home = tempfile::tempdir()?;
+    write_test_config(codex_home.path(), &repo_root)?;
+
+    let mut terminal = PtyCodex::start(&repo_root, codex_home)?;
+    terminal.wait_for_startup()?;
+
+    let input = format!("{FOCUS_PROBE_INPUT}-timeout");
+    let focus_started = Instant::now();
+    let focus_output_start = terminal.output.len();
+    terminal.write_input(b"\x1b[I")?;
+    terminal.wait_for_palette_query(focus_started, focus_output_start)?;
+    terminal.write_input(input.as_bytes())?;
+    terminal.wait_for_focus_result(&input, LIGHT_COMPOSER_BACKGROUND, focus_started)?;
 
     Ok(())
 }
@@ -96,6 +129,9 @@ impl PtyCodex {
             .arg("-C")
             .arg(repo_root)
             .env("TERM", "xterm-256color")
+            .env("COLORTERM", "truecolor")
+            .env_remove("NO_COLOR")
+            .env_remove("FORCE_COLOR")
             .env("OPENAI_API_KEY", "focus-palette-test")
             .env("CODEX_HOME", codex_home.path())
             .stdin(stdin)
@@ -124,7 +160,10 @@ impl PtyCodex {
             self.read_output(Duration::from_millis(/*millis*/ 50))?;
             self.answer_startup_queries()?;
 
-            if self.palette_answered && self.screen_contains("OpenAI Codex") {
+            if self.palette_answered
+                && self.screen_contains("OpenAI Codex")
+                && self.composer_background() == Some(LIGHT_COMPOSER_BACKGROUND)
+            {
                 return Ok(());
             }
 
@@ -143,29 +182,48 @@ impl PtyCodex {
         );
     }
 
-    fn wait_for_focus_input(
+    fn wait_for_palette_query(
         &mut self,
-        input: &str,
         focus_started: Instant,
-        startup_output_len: usize,
+        output_start: usize,
     ) -> Result<()> {
         while focus_started.elapsed() < FOCUS_INPUT_TIMEOUT {
-            self.read_output(Duration::from_millis(/*millis*/ 20))?;
-            let focus_output = &self.output[startup_output_len..];
-            ensure!(
-                !contains_bytes(focus_output, b"\x1b]10;?")
-                    && !contains_bytes(focus_output, b"\x1b]11;?"),
-                "focus regain queried terminal colors after the startup palette was cached",
-            );
-            if self.screen_contains(input) {
+            self.read_output(Duration::from_millis(/*millis*/ 5))?;
+            let focus_output = &self.output[output_start..];
+            if contains_bytes(focus_output, b"\x1b]10;?")
+                && contains_bytes(focus_output, b"\x1b]11;?")
+            {
                 return Ok(());
             }
         }
 
         bail!(
-            "focus-time palette refresh blocked or discarded {input:?} for more than {:?}; \
-             screen:\n{}",
+            "focus regain did not query the terminal palette within {:?}; screen:\n{}",
             FOCUS_INPUT_TIMEOUT,
+            self.screen_contents(),
+        );
+    }
+
+    fn wait_for_focus_result(
+        &mut self,
+        input: &str,
+        expected_background: vt100::Color,
+        focus_started: Instant,
+    ) -> Result<()> {
+        while focus_started.elapsed() < FOCUS_INPUT_TIMEOUT {
+            self.read_output(Duration::from_millis(/*millis*/ 20))?;
+            if self.screen_contains(input)
+                && self.composer_background() == Some(expected_background)
+            {
+                return Ok(());
+            }
+        }
+
+        bail!(
+            "focus-time palette refresh did not preserve {input:?} with background \
+             {expected_background:?} within {:?}; actual background: {:?}; screen:\n{}",
+            FOCUS_INPUT_TIMEOUT,
+            self.composer_background(),
             self.screen_contents(),
         );
     }
@@ -185,7 +243,7 @@ impl PtyCodex {
             && contains_bytes(&self.output, b"\x1b]10;?")
             && contains_bytes(&self.output, b"\x1b]11;?")
         {
-            self.write_input(b"\x1b]10;rgb:ffff/ffff/ffff\x1b\\\x1b]11;rgb:0000/0000/0000\x1b\\")?;
+            self.write_input(LIGHT_PALETTE_RESPONSE)?;
             self.palette_answered = true;
         }
 
@@ -234,6 +292,17 @@ impl PtyCodex {
 
     pub(super) fn screen_contents(&self) -> String {
         self.parser.screen().contents()
+    }
+
+    fn composer_background(&self) -> Option<vt100::Color> {
+        let screen = self.parser.screen();
+        let (rows, cols) = screen.size();
+        (0..rows).rev().find_map(|row| {
+            (0..cols).find_map(|col| {
+                let cell = screen.cell(row, col)?;
+                (cell.bgcolor() != vt100::Color::Default).then(|| cell.bgcolor())
+            })
+        })
     }
 }
 

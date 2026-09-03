@@ -142,6 +142,22 @@ pub(crate) fn set_default_colors_from_startup_probe(
     imp::set_default_colors_from_startup_probe(colors);
 }
 
+/// Refreshes cached terminal colors without discarding the last complete pair on timeout.
+#[cfg(unix)]
+pub(crate) fn refresh_default_colors() -> std::io::Result<()> {
+    let Some(colors) =
+        crate::terminal_probe::default_colors(crate::terminal_probe::DEFAULT_TIMEOUT)?
+    else {
+        tracing::debug!(
+            event = "terminal_palette_refresh_unavailable",
+            "terminal did not return refreshed default colors"
+        );
+        return Ok(());
+    };
+    imp::set_default_colors_from_startup_probe(Some(colors));
+    Ok(())
+}
+
 #[cfg(all(unix, not(test)))]
 mod imp {
     use super::DefaultColors;

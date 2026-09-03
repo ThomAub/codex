@@ -39,6 +39,8 @@ use ratatui::layout::Size;
 use ratatui::text::Line;
 use tokio::sync::broadcast;
 use tokio_stream::Stream;
+#[cfg(unix)]
+use tokio_stream::StreamExt;
 
 pub use self::frame_requester::FrameRequester;
 use self::input_boundary::TerminalInitializationGuard;
@@ -817,6 +819,28 @@ impl Tui {
             self.suspend_context.clone(),
             self.alt_screen_active.clone(),
         );
+        #[cfg(unix)]
+        let stream = {
+            let event_broker = self.event_broker.clone();
+            stream.map(move |event| {
+                // Avoid a focus-time delay in terminals that did not answer the startup probe.
+                if matches!(event, TuiEvent::FocusGained)
+                    && crate::terminal_palette::default_colors().is_some()
+                {
+                    event_broker.pause_events();
+                    let result = crate::terminal_palette::refresh_default_colors();
+                    event_broker.resume_events();
+                    if let Err(err) = result {
+                        tracing::warn!(
+                            event = "terminal_palette_refresh_failed",
+                            error = %err,
+                            "failed to refresh terminal default colors"
+                        );
+                    }
+                }
+                event
+            })
+        };
         #[cfg(not(unix))]
         let stream = TuiEventStream::new(
             self.event_broker.clone(),
